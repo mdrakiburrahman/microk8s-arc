@@ -3,7 +3,10 @@ Environment to deploy Arc Data Services in a fresh Microk8s Cluster.
 
 ## Microk8s deployment
 
-Run these in local **PowerShell** to spin up via Multipass:
+Run these in local **PowerShell in _Admin mode_** to spin up via Multipass:
+
+> Run with Docker Desktop turned off so `microk8s-vm` has no trouble booting up
+
 ```PowerShell
 # Delete old one (if any)
 multipass list
@@ -32,16 +35,18 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide
 # NAME          STATUS   ROLES    AGE   VERSION                    INTERNAL-IP      EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
-# microk8s-vm   Ready    <none>   75s   v1.22.6-3+7ab10db7034594   172.27.229.208   <none>        Ubuntu 18.04.6 LTS   4.15.0-169-generic   containerd://1.5.2
+# microk8s-vm   Ready    <none>   75s   v1.22.6-3+7ab10db7034594   172.22.9.46      <none>        Ubuntu 18.04.6 LTS   4.15.0-169-generic   containerd://1.5.2
 
 # Enable features needed for arc
 microk8s enable dns storage metallb ingress
-# Enter CIDR for MetalLB: 172.27.229.215-172.27.229.225
+# Enter CIDR for MetalLB: 172.22.9.60-172.22.9.70
 
 # Access via kubectl in this container
 $DIR = "C:\Users\mdrrahman\Documents\GitHub\microk8s-arc\microk8s"
 microk8s config view > $DIR\config # Export kubeconfig
 ```
+
+Turn on Docker Desktop.
 
 Now we go into our VSCode Container:
 
@@ -139,6 +144,11 @@ kubectl get sqlmi sql-gp-1 -n arc -o json | jq -r ".status.endpoints"
   "mirroring": "172.27.229.218:5022",
   "primary": "172.27.229.218,31433"
 }
+
+# Delete SQL MI
+
+# Create 4 SQL MIs
+kubectl apply -f sql-mi/sql-gp-4-together.yaml
 ```
 
 ---
