@@ -2,4 +2,4 @@ March_2022*
 *.whl
 *.env
 config
-control.json
+kubernetes/custom/control.json

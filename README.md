@@ -35,11 +35,11 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide
 # NAME          STATUS   ROLES    AGE   VERSION                    INTERNAL-IP      EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
-# microk8s-vm   Ready    <none>   75s   v1.22.6-3+7ab10db7034594   172.22.9.46      <none>        Ubuntu 18.04.6 LTS   4.15.0-169-generic   containerd://1.5.2
+# microk8s-vm   Ready    <none>   75s   v1.22.6-3+7ab10db7034594   172.19.190.230      <none>        Ubuntu 18.04.6 LTS   4.15.0-169-generic   containerd://1.5.2
 
 # Enable features needed for arc
 microk8s enable dns storage metallb ingress
-# Enter CIDR for MetalLB: 172.22.9.60-172.22.9.70
+# Enter CIDR for MetalLB: 172.20.175.40-172.20.175.50
 
 # Access via kubectl in this container
 $DIR = "C:\Users\mdrrahman\Documents\GitHub\microk8s-arc\microk8s"
@@ -77,7 +77,7 @@ kubectl get storageclass
 
 ---
 
-## Arc deployment - latest release
+## Arc deployment - latest release - Indirect Mode
 
 ```bash
 cd kubernetes
@@ -146,6 +146,8 @@ kubectl get sqlmi sql-gp-1 -n arc -o json | jq -r ".status.endpoints"
 }
 
 # Delete SQL MI
+kubectl delete -f sql-mi/sql-gp-1.yaml
+kubectl delete pvc -n arc -l=app.kubernetes.io/instance=sql-gp-1
 
 # Create 4 SQL MIs
 kubectl apply -f sql-mi/sql-gp-4-together.yaml
