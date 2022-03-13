@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ secretName }}
+  namespace: {{ arcDataNamespace }}
+type: Opaque
+data:
+  certificate.pem: {{ base64Certificate }}
+  privatekey.pem: {{ base64PrivateKey }}

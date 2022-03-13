@@ -1,5 +1,5 @@
 {
-	"name": "Terraform Container",
+	"name": "Microk8s Container",
 	"dockerFile": "Dockerfile",
 
     // Mount to Docker

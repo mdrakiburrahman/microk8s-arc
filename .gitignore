@@ -3,3 +3,4 @@ March_2022*
 *.env
 config
 kubernetes/custom/control.json
+kubernetes/monitoring/certs/*
