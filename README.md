@@ -21,7 +21,7 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
-microk8s install "--cpu=4" "--mem=12" "--disk=25" "--channel=1.22/stable" -y
+microk8s install "--cpu=6" "--mem=16" "--disk=25" "--channel=1.22/stable" -y
 # Seems to work better for smaller VMs
 
 # Launched: microk8s-vm
@@ -42,13 +42,13 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide
 # NAME          STATUS   ROLES    AGE   VERSION                    INTERNAL-IP      EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
-# microk8s-vm   Ready    <none>   75s   v1.22.6-3+7ab10db7034594   172.31.121.26    <none>        Ubuntu 18.04.6 LTS   4.15.0-169-generic   containerd://1.5.2
+# microk8s-vm   Ready    <none>   75s   v1.22.6-3+7ab10db7034594   172.21.197.101   <none>        Ubuntu 18.04.6 LTS   4.15.0-169-generic   containerd://1.5.2
 
 # Enable features needed for arc
-microk8s enable dns storage metallb ingress
+microk8s enable dns storage metallb ingress rbac
 # Enter CIDR for MetalLB: 
 
-# 172.31.121.50-172.31.121.70
+# 172.21.197.120-172.21.197.130
 
 
 # This must be in the same range as the VM above!
@@ -85,6 +85,63 @@ kubectl get pods --all-namespaces
 kubectl get storageclass
 # NAME                          PROVISIONER            RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
 # microk8s-hostpath (default)   microk8s.io/hostpath   Delete          Immediate           false                  27m
+```
+---
+
+## Creating a scoped Service Account for deployment
+
+Alternative to `cluster-admin`:
+
+```bash
+# ClusterRole, ClusterRoleBinding, ServiceAccount
+kubectl apply -f /workspaces/microk8s-arc/microk8s/tina-onboarder-rbac.yaml
+# clusterrole.rbac.authorization.k8s.io/arc-data-deployer-cluster-role created
+# clusterrolebinding.rbac.authorization.k8s.io/arc-data-deployer-cluster-rolebinding created
+# serviceaccount/arc-data-deployer created
+```
+
+Generate the kubeconfig:
+
+```bash
+# Service Account is in default but because of ClusterRoleBinding it has Cluster scope
+namespace=default
+serviceAccount=arc-data-deployer
+clusterName=microk8s-cluster
+server=https://172.21.197.101:16443 # Replace every new cluster
+
+# Cache variables for Kubeconfig
+secretName=$(kubectl --namespace $namespace get serviceAccount $serviceAccount -o jsonpath='{.secrets[0].name}')
+ca=$(kubectl --namespace $namespace get secret/$secretName -o jsonpath='{.data.ca\.crt}')
+token=$(kubectl --namespace $namespace get secret/$secretName -o jsonpath='{.data.token}' | base64 --decode)
+
+# Remove previous cluster-admin kubeconfig
+rm $HOME/.kube/config
+
+kubectl get pods --all-namespaces # This will not work since we blew away the kubeconfig
+# The connection to the server localhost:8080 was refused - did you specify the right host or port?
+
+# Create scoped kubeconfig
+echo "
+apiVersion: v1
+kind: Config
+clusters:
+  - name: ${clusterName}
+    cluster:
+      certificate-authority-data: ${ca}
+      server: ${server}
+contexts:
+  - name: ${serviceAccount}@${clusterName}
+    context:
+      cluster: ${clusterName}
+      namespace: ${namespace}
+      user: ${serviceAccount}
+users:
+  - name: ${serviceAccount}
+    user:
+      token: ${token}
+current-context: ${serviceAccount}@${clusterName}
+" >> $HOME/.kube/config
+
 ```
 
 ---
@@ -192,7 +249,7 @@ sed -i -e 's/default/microk8s-hostpath/g' custom/control.json
 ```bash
 # If the 2 logs secrets above are deployed to Arc Namespace, DC should start with them and apply to Kibana, Grafana
 
-# Create with the AKS profile
+# Create with the Microk8s profile
 az arcdata dc create --path './custom' \
                      --k8s-namespace arc \
                      --name $arcDcName \

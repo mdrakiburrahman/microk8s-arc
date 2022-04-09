@@ -1,0 +1,73 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: arc-data-deployer-cluster-role
+rules:
+  # CRDs in general
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ['create', 'update', 'patch', 'delete', 'list', 'get', 'watch'] # Can figure out lesser scope if needed
+  # All Arc Data apiGroups, I think some of these may be redundant - K8s doesn't give an easy way to get custom apiGroups so I put everything in
+  # https://stackoverflow.com/a/49398935/8954538
+  - apiGroups: ["arcdata.microsoft.com", "postgresqls.arcdata.microsoft.com", "sqlmanagedinstances.sql.arcdata.microsoft.com", "sqlmanagedinstancerestoretasks.tasks.sql.arcdata.microsoft.com", "exporttasks.tasks.arcdata.microsoft.com", "dags.sql.arcdata.microsoft.com", "activedirectoryconnectors.arcdata.microsoft.com", "monitors.arcdata.microsoft.com", "kafkas.arcdata.microsoft.com", "datacontrollers.arcdata.microsoft.com", "sql.arcdata.microsoft.com"]
+    resources: ["*"]
+    verbs: ['*']
+  # MutatingWebhookConfiguration
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    verbs: ['create', 'update', 'patch', 'delete', 'list', 'get', 'watch']
+  # APIService
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: ["apiservices"]
+    verbs: ['create', 'update', 'patch', 'delete', 'list', 'get', 'watch']
+  # Role
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ['*'] # Wildcard is needed because bootstrapper needs it
+  # RoleBinding
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ['*'] # Wildcard is needed because bootstrapper needs it
+  # ClusterRole
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ['*'] # Wildcard is needed because bootstrapper needs it
+  # ClusterRoleBinding
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ['*'] # Wildcard is needed because bootstrapper needs it
+  # Core API stuff
+  - apiGroups: ['']
+    resources: ["serviceaccounts", "configmaps", "secrets", "persistentvolumeclaims", "resourcequotas", "services", "namespaces", "pods", "nodes", "events", "pods/log"]
+    verbs: ["*"] # Wildcard is needed because bootstrapper needs it
+  # Limited node permissions
+  - apiGroups: ['']
+    resources: ["nodes"]
+    verbs: ['list', 'get', 'watch']
+  # Apps
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets", "daemonsets"]
+    verbs: ["*"] # Wildcard is needed because bootstrapper needs it
+  # Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: arc-data-deployer-cluster-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: arc-data-deployer
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: arc-data-deployer-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arc-data-deployer
+  namespace: default

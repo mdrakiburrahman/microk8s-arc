@@ -1,0 +1,109 @@
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kyvos-argocd
+  uid: d061bb36-062c-4771-b8d2-bee08cb72272
+  resourceVersion: '75100753'
+  creationTimestamp: '2021-12-09T23:09:47Z'
+rules:
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - ''
+    resources:
+      - configmaps
+      - persistentvolumeclaims
+      - resourcequotas
+      - services
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - apps
+    resources:
+      - deployments
+      - statefulsets
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - apps.openshift.io
+    resources:
+      - deploymentconfigs
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - route.openshift.io
+    resources:
+      - routes
+      - routes/custom-host
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+  - verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - list
+      - get
+      - watch
+    apiGroups:
+      - batch
+    resources:
+      - cronjobs
