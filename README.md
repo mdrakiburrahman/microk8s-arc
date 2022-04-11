@@ -12,7 +12,13 @@ Run these in local **PowerShell in _Admin mode_** to spin up via Multipass:
 * Default VM files end up here: `C:\Windows\System32\config\systemprofile\AppData\Roaming\multipassd`
 * Generated kubeconfig available here: `C:\Users\mdrrahman\AppData\Local\MicroK8s\config`
 
+### Multipass BSOD due to Hyper-V Dynamic Memory
+* https://github.com/canonical/multipass/issues/604
+* https://github.com/kubernetes/minikube/issues/1766
 
+> This keeps the memory constant so Hyper-V doesn't kill our K8s cluster.
+
+Open PowerShell as **admin**:
 ```PowerShell
 # Delete old one (if any)
 multipass list
@@ -21,12 +27,22 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
-microk8s install "--cpu=6" "--mem=16" "--disk=25" "--channel=1.22/stable" -y
+microk8s install "--cpu=8" "--mem=32" "--disk=25" "--channel=1.22/stable" -y
+
 # Seems to work better for smaller VMs
 
 # Launched: microk8s-vm
 # 2022-03-05T23:05:51Z INFO Waiting for automatic snapd restart...
 # ...
+
+# Stop the VM
+microk8s stop
+
+# Turn off Dynamic Memory
+Set-VMMemory -VMName 'microk8s-vm' -DynamicMemoryEnabled $false -Priority 100
+
+# Start the VM
+microk8s start
 
 # Allow priveleged containers
 multipass shell microk8s-vm
@@ -40,15 +56,21 @@ exit # Exit out from Microk8s vm
 microk8s status --wait-ready
 
 # Get IP address of node for MetalLB range
-microk8s kubectl get nodes -o wide
-# NAME          STATUS   ROLES    AGE   VERSION                    INTERNAL-IP      EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
-# microk8s-vm   Ready    <none>   75s   v1.22.6-3+7ab10db7034594   172.21.197.101   <none>        Ubuntu 18.04.6 LTS   4.15.0-169-generic   containerd://1.5.2
+microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
+# {
+#   "address": "172.30.93.175",
+#   "type": "InternalIP"
+# }
+# {
+#   "address": "microk8s-vm",
+#   "type": "Hostname"
+# }
 
 # Enable features needed for arc
 microk8s enable dns storage metallb ingress rbac
 # Enter CIDR for MetalLB: 
 
-# 172.21.197.120-172.21.197.130
+# 172.30.93.185-172.30.93.195
 
 
 # This must be in the same range as the VM above!
@@ -219,6 +241,7 @@ export AZDATA_LOGSUI_USERNAME=$AZDATA_USERNAME
 export AZDATA_METRICSUI_USERNAME=$AZDATA_USERNAME
 export AZDATA_LOGSUI_PASSWORD=$AZDATA_PASSWORD
 export AZDATA_METRICSUI_PASSWORD=$AZDATA_PASSWORD
+export FEATURE_FLAG_RESOURCE_SYNC=1 # Resource hydration
 
 # Login as service principal
 az login --service-principal --username $spnClientId --password $spnClientSecret --tenant $spnTenantId
@@ -290,7 +313,7 @@ az k8s-extension create --name arc-data-services \
                         --scope cluster \
                         --release-namespace arc \
                         --config Microsoft.CustomLocation.ServiceAccount=sa-arc-bootstrapper \
-                        --config systemDefaultValues.image=mcr.microsoft.com/arcdata/arc-bootstrapper:v1.4.1_2022-03-08
+                        --config systemDefaultValues.image=mcr.microsoft.com/arcdata/arc-bootstrapper:v1.4.1_2022-03-08 # March 2022
 
 # Retrieve System Assigned Service Principal for Arc Data Extension
 export MSI_OBJECT_ID=`az k8s-extension show --resource-group $resourceGroup  --cluster-name $connectedClusterName  --cluster-type connectedClusters --name arc-data-services | jq '.identity.principalId' | tr -d \"`
@@ -328,8 +351,10 @@ az arcdata dc create --path './custom' \
                      --name $arcDcName \
                      --subscription $subscriptionId \
                      --resource-group $resourceGroup \
-                     --location $azureLocation \
-                     --connectivity-mode direct
+                     --connectivity-mode direct \
+                     --cluster-name $connectedClusterName
+
+# April 2022 went through some new additions/breaking changes on errors
 
 ```
 ---
@@ -443,4 +468,177 @@ kubectl delete mutatingwebhookconfiguration arcdata.microsoft.com-webhook-$mynam
 
 ## Delete namespace
 kubectl delete ns $mynamespace
+```
+---
+
+### Upgrade Arc
+
+Get all running container versions
+``` bash
+# Get all images
+kubectl get pods -n arc -o=jsonpath="{range .items[*]}{'\n'}{.metadata.name}{':\t'}{range .spec.containers[*]}{.image}{', '}{end}{end}"
+```
+
+List available upgrades:
+```bash
+az arcdata dc list-upgrades -k arc
+# Found 7 valid versions.  The current datacontroller version is v1.5.0_2022-04-05.
+# v1.5.0_2022-04-05 << current version
+# v1.4.1_2022-03-08
+# v1.4.0_2022-02-25
+# v1.3.0_2022-01-27
+# v1.2.0_2021-12-15
+# v1.1.0_2021-11-02
+# v1.0.0_2021-07-30
+
+# Upgrade
+az arcdata dc upgrade --desired-version 'v1.5.0_2022-04-05' --name 'arc-dc' --resource-group $resourceGroup
+
+```
+
+---
+
+### Test PITRs
+
+1. Connect to Primary endpoint via SSMS: `172.30.93.188,31433`
+
+2. Create Database & Table
+
+```sql
+-- Create DB
+CREATE DATABASE raki_pitr_test;
+GO
+
+USE raki_pitr_test;
+GO 
+
+CREATE TABLE table1 (ID int, value nvarchar(10))
+GO
+
+INSERT INTO table1 VALUES (1, 'demo1')
+INSERT INTO table1 VALUES (2, 'demo2')
+
+SELECT * FROM table1;
+-- Data is there
+
+-- Get GUID
+SELECT drs.recovery_fork_guid, dbs.name, dbs.state
+FROM sys.database_recovery_status drs
+JOIN sys.databases dbs
+ON drs.database_id = dbs.database_id
+WHERE dbs.[state] = 0
+AND dbs.name = 'raki_pitr_test'
+
+-- 4FAF3DAB-AF8F-4EDE-9000-41A2344DA82F
+
+-- Check if backups are taken by PITR
+SELECT s.database_name,
+       CASE s.[type]
+              WHEN 'D' THEN 'Full'
+              WHEN 'I' THEN 'Differential'
+              WHEN 'L' THEN 'Transaction Log'
+       END AS backuptype,
+       s.first_lsn,
+       s.last_lsn,
+       s.database_backup_lsn,
+       s.checkpoint_lsn,
+       s.recovery_model,
+       *
+FROM   msdb..backupset s
+WHERE  s.database_name = 'raki_pitr_test' ORDER BY s.backup_finish_date DESC
+```
+
+3. Ensure backups are present in Pod
+```bash
+kubectl exec -it sql-gp-1-0 -c arc-sqlmi -n arc -- /bin/sh
+
+export backups='4FAF3DAB-AF8F-4EDE-9000-41A2344DA82F'
+backups=$(echo $backups | tr '[:upper:]' '[:lower:]')
+cd /var/opt/mssql/backups/current/$backups
+
+# We see our DB backups
+ls -la
+# total 3576
+# drwxrwxr-x.  2 1000700001 1000700001    4096 Mar 23 22:08 .
+# drwxrwxr-x. 11 1000700001 1000700001    4096 Mar 23 22:02 ..
+# -rw-rw----.  1 1000700001 1000700001 3198976 Mar 23 22:01 full-20220323220148-fb6e2eb7-d366-405b-a0dd-8e8643141990.bak
+# -rw-rw-r--.  1 1000700001 1000700001     872 Mar 23 22:02 full-20220323220148-fb6e2eb7-d366-405b-a0dd-8e8643141990.json
+# -rw-rw----.  1 1000700001 1000700001  307200 Mar 23 22:02 log-20220323220248-fde5a5ed-0480-4b52-933b-47faac67b871.bak
+# -rw-rw-r--.  1 1000700001 1000700001     871 Mar 23 22:02 log-20220323220248-fde5a5ed-0480-4b52-933b-47faac67b871.json
+# -rw-rw----.  1 1000700001 1000700001  110592 Mar 23 22:08 log-20220323220818-83b962ed-fdec-46fd-b02b-52f03db506c9.bak
+# -rw-rw-r--.  1 1000700001 1000700001     870 Mar 23 22:08 log-20220323220818-83b962ed-fdec-46fd-b02b-52f03db506c9.json
+
+# Let's pick a restore time
+cat log-20220410223622-b8a3bdf4-be96-4f35-9c27-d45da92acba0.json
+# {
+#   "databaseName": "raki_pitr_test",
+#   "uniqueDatabaseId": "4faf3dab-af8f-4ede-9000-41a2344da82f",
+#   "createdDateTime": "2022-04-10T22:36:22.3022144Z",
+#   "backupFilePath": "current/4faf3dab-af8f-4ede-9000-41a2344da82f/log-20220410223622-b8a3bdf4-be96-4f35-9c27-d45da92acba0.bak",
+#   "backupStatus": 1,
+#   "backupId": "b8a3bdf4-be96-4f35-9c27-d45da92acba0",
+#   "backupStartDate": "2022-04-10T22:36:23Z",
+#   "backupFinishDate": "2022-04-10T22:36:23Z",
+#   "lastValidRestoreTime": "2022-04-10T22:30:53Z",
+#   "firstLsn": "38000000100800001",
+#   "lastLsn": "38000000110400001",
+#   "checkpointLsn": "38000000101600002",
+#   "databaseBackupLsn": "38000000040800001",
+#   "backupType": 1,
+#   "familyGuid": "4faf3dab-af8f-4ede-9000-41a2344da82f",
+#   "backupSetGuid": "a258a0e2-0f34-4bbc-ab33-5e580dac8194",
+#   "compatibilityLevel": 160,
+#   "isDamaged": false,
+#   "uncompressedBackupSize": 81920
+# }
+```
+
+4. Apply (in)correct restore task
+
+```bash
+# Correct date
+cat <<EOF | kubectl create -f -
+apiVersion: tasks.sql.arcdata.microsoft.com/v1
+kind: SqlManagedInstanceRestoreTask
+metadata:
+  name: sql-restore-raki-correct
+  namespace: arc
+spec:
+  source:
+    name: sql-gp-1
+    database: raki_pitr_test
+  restorePoint: "2022-04-10T22:30:53Z"
+  destination:
+    name: sql-gp-1
+    database: raki_pitr_test_restore
+EOF
+
+# sql-restore-raki-correct   Completed   16s
+
+# Incorrect date
+cat <<EOF | kubectl create -f -
+apiVersion: tasks.sql.arcdata.microsoft.com/v1
+kind: SqlManagedInstanceRestoreTask
+metadata:
+  name: sql-restore-raki-incorrect
+  namespace: arc
+spec:
+  source:
+    name: sql-gp-1
+    database: raki_pitr_test
+  restorePoint: "1990-04-10T22:30:53Z"
+  destination:
+    name: sql-gp-1
+    database: raki_pitr_test_restore_2
+EOF
+
+# sql-restore-raki-incorrect   Failed      25s
+# Status:
+#   Earliest Restore Time:  2022-04-10T22:30:34.000000Z
+#   Last Update Time:       2022-04-10T22:44:59.957682Z
+#   Latest Restore Time:    2022-04-10T22:36:23.000000Z
+#   Message:                '1990-04-10T22:30:53.0000000Z' is outside the range of available backups from '2022-04-10T22:30:34.0000000Z' to '2022-04-10T22:36:23.0000000Z' (Parameter 'RestoreTime')
+#   Observed Generation:    1
+#   State:                  Failed
+# Events:                   <none>
 ```
