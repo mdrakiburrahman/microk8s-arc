@@ -11,8 +11,7 @@
 		"--cap-add=SYS_PTRACE",
 		"--security-opt",
 		"seccomp=unconfined",
-		"--env-file=.devcontainer/devcontainer.env",
-		// "--network=bridge"
+		"--env-file=.devcontainer/devcontainer.env"
 	],
 	
 	// Set *default* container specific settings.json values on container create.
