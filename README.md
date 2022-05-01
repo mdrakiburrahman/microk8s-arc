@@ -2,6 +2,7 @@
 Environment to deploy Arc Data Services in a fresh Microk8s Cluster.
 
 ## Microk8s deployment
+> https://microk8s.io/docs/install-alternatives
 
 Run these in local **PowerShell in _Admin mode_** to spin up via Multipass:
 
@@ -27,7 +28,7 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
-microk8s install "--cpu=8" "--mem=32" "--disk=25" "--channel=1.22/stable" -y
+microk8s install "--cpu=8" "--mem=16" "--disk=25" "--channel=1.22/stable" -y
 
 # Seems to work better for smaller VMs
 
@@ -58,7 +59,7 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # {
-#   "address": "172.30.93.175",
+#   "address": "172.19.139.53",
 #   "type": "InternalIP"
 # }
 # {
@@ -70,8 +71,7 @@ microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 microk8s enable dns storage metallb ingress rbac
 # Enter CIDR for MetalLB: 
 
-# 172.30.93.185-172.30.93.195
-
+# 172.19.139.60-172.19.139.75
 
 # This must be in the same range as the VM above!
 
@@ -255,6 +255,7 @@ az group create --name $resourceGroup --location $azureLocation
 ```
 
 ---
+
 ## Microk8s custom profile for Data Controller
 
 ```bash
