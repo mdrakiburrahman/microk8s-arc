@@ -80,13 +80,6 @@ RUN apt-get install -y apt-transport-https ca-certificates curl gnupg-agent soft
 RUN curl -sSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose \
     && chmod +x /usr/local/bin/docker-compose
 
-# Install Python
-USER root
-RUN apt-get update -y \
-    && apt-get install -y python3.9 \
-    && apt-get install -y python3.9-venv \
-    && apt-get install -y python3-pip
-
 # Clean up
 RUN apt-get autoremove -y \
     && apt-get clean -y \
