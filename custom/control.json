@@ -1,0 +1,58 @@
+{
+    "apiVersion": "arcdata.microsoft.com/v4",
+    "kind": "DataController",
+    "metadata": {
+        "name": "datacontroller"
+    },
+    "spec": {
+        "infrastructure": "azure",
+        "credentials": {
+            "serviceAccount": "sa-arc-controller",
+            "dockerRegistry": "arc-private-registry",
+            "domainServiceAccount": "domain-service-account-secret"
+        },
+        "docker": {
+            "registry": "mcr.microsoft.com",
+            "repository": "arcdata",
+            "imageTag": "v1.5.0_2022-04-05",
+            "imagePullPolicy": "Always"
+        },
+        "storage": {
+            "data": {
+                "className": "microk8s-hostpath",
+                "accessMode": "ReadWriteOnce",
+                "size": "15Gi"
+            },
+            "logs": {
+                "className": "microk8s-hostpath",
+                "accessMode": "ReadWriteOnce",
+                "size": "10Gi"
+            }
+        },
+        "security": {
+            "allowDumps": true,
+            "allowNodeMetricsCollection": true,
+            "allowPodMetricsCollection": true
+        },
+        "services": [
+            {
+                "name": "controller",
+                "serviceType": "LoadBalancer",
+                "port": 30080
+            }
+        ],
+        "settings": {
+            "azure": {
+                "autoUploadMetrics": "false",
+                "autoUploadLogs": "false"
+            },
+            "controller": {
+                "logs.rotation.size": "5000",
+                "logs.rotation.days": "7"
+            },
+            "ElasticSearch": {
+                "vm.max_map_count": "-1"
+            }
+        }
+    }
+}

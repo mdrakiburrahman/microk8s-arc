@@ -28,7 +28,7 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
-microk8s install "--cpu=8" "--mem=16" "--disk=25" "--channel=1.22/stable" -y
+microk8s install "--cpu=8" "--mem=16" "--disk=100" "--channel=1.22/stable" -y
 
 # Seems to work better for smaller VMs
 
@@ -59,7 +59,7 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # {
-#   "address": "172.19.139.53",
+#   "address": "172.28.113.239",
 #   "type": "InternalIP"
 # }
 # {
@@ -68,16 +68,19 @@ microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # }
 
 # Enable features needed for arc
-microk8s enable dns storage metallb ingress rbac
+microk8s enable dns storage metallb ingress dashboard # rbac # dashboard <> rbac - both causes issues, one is ok
 # Enter CIDR for MetalLB: 
 
-# 172.19.139.60-172.19.139.75
+# 172.28.113.200-172.28.113.230
 
 # This must be in the same range as the VM above!
 
 # Access via kubectl in this container
 $DIR = "C:\Users\mdrrahman\Documents\GitHub\microk8s-arc\microk8s"
 microk8s config view > $DIR\config # Export kubeconfig
+
+# Access Dashboard via proxy
+microk8s dashboard-proxy
 ```
 
 Turn on Docker Desktop.
@@ -241,7 +244,7 @@ export AZDATA_LOGSUI_USERNAME=$AZDATA_USERNAME
 export AZDATA_METRICSUI_USERNAME=$AZDATA_USERNAME
 export AZDATA_LOGSUI_PASSWORD=$AZDATA_PASSWORD
 export AZDATA_METRICSUI_PASSWORD=$AZDATA_PASSWORD
-export FEATURE_FLAG_RESOURCE_SYNC=1 # Resource hydration
+# export FEATURE_FLAG_RESOURCE_SYNC=1 # Resource hydration - needs Direct mode!!
 
 # Login as service principal
 az login --service-principal --username $spnClientId --password $spnClientSecret --tenant $spnTenantId
@@ -285,6 +288,9 @@ az arcdata dc create --path './custom' \
 
 # Monitor Data Controller
 watch -n 20 kubectl get datacontroller -n arc
+
+# Monitor pods
+watch -n 10 kubectl get pods -n arc
 ```
 
 ---
@@ -444,11 +450,11 @@ kubectl delete crd datacontrollers.arcdata.microsoft.com
 kubectl delete crd postgresqls.arcdata.microsoft.com
 kubectl delete crd sqlmanagedinstances.sql.arcdata.microsoft.com
 kubectl delete crd sqlmanagedinstancerestoretasks.tasks.sql.arcdata.microsoft.com
-kubectl delete crd dags.sql.arcdata.microsoft.com
 kubectl delete crd exporttasks.tasks.arcdata.microsoft.com
 kubectl delete crd monitors.arcdata.microsoft.com
 kubectl delete crd activedirectoryconnectors.arcdata.microsoft.com
 kubectl delete crd kafkas.arcdata.microsoft.com
+kubectl delete crd failovergroups.sql.arcdata.microsoft.com
 
 export mynamespace="arc"
 
@@ -643,3 +649,79 @@ EOF
 #   State:                  Failed
 # Events:                   <none>
 ```
+
+---
+
+# OTEL
+
+```bash
+# Get Secrets
+kubectl get secret controller-db-rw-secret -n arc -o json | jq -r '.data.password' | base64 -d
+kubectl get secret controller-db-rw-secret -n arc -o json | jq -r '.data.username' | base64 -d
+kubectl get secret controller-db-data-encryption-key-secret -n arc -o json | jq -r '.data.encryptionPassword' | base64 -d
+```
+
+| Tech       | Expose endpoint                                                         | Endpoint                 | Credentials                                        | Purpose                  |
+| ---------- | ----------------------------------------------------------------------- | ------------------------ | -------------------------------------------------- | ------------------------ |
+| FSM        | `kubectl port-forward service/controldb-svc -n arc 1433:1433`           | `127.0.0.1,1433`         | controldb-rw-user:V2PtzVq9iW8pnJ-qi33GRqw8aumYmxPV | ControllerDB             |
+
+### Expose ControlDB as a `LoadBalancer`
+```bash
+cat <<EOF | kubectl create -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: controldb-external-svc
+  namespace: arc
+spec:
+  type: LoadBalancer
+  selector:
+    ARC_NAMESPACE: arc
+    app: controldb
+    plane: control
+    role: controldb
+  ports:
+  - name: database-port
+    port: 1433
+    protocol: TCP
+    targetPort: 1433
+EOF
+
+NAME                      TYPE           CLUSTER-IP       EXTERNAL-IP      PORT(S)                                       AGE
+controldb-external-svc    LoadBalancer   10.152.183.23    172.31.147.204   1433:31385/TCP                                6s
+```
+
+### Grab certs for OTEL repo
+
+Run `/workspaces/microk8s-arc/kubernetes/otel/pull-certs.sh`
+
+Copy to `C:\Users\mdrrahman\Documents\GitHub\otel-hackathon\Arc-otel-experiment\certificates`.
+
+### Inject OTEL File Delivery
+
+Run:
+```powershell
+cd C:\Users\mdrrahman\Documents\GitHub\otel-hackathon
+code -r Arc-file-delivery-injector
+```
+Run the dotnet App `C:\Users\mdrrahman\Documents\GitHub\otel-hackathon\Arc-file-delivery-injector` via `dotnet run` to inject the file Delivery.
+
+> Make sure to localize to IP of Controller DB and Password and encryptionKey in the dotnet!
+
+```bash
+dotnet clean
+dotnet build
+dotnet run
+```
+
+### OTEL demo
+* Create Kafka for both namespaces
+* Create OTEL collector and agent
+
+### Reboot SQL MI to fire Fluentbit
+
+```bash
+k delete pod sql-gp-1-0 -n arc --grace-period=0 --force
+```
+
+Tail fluentbit in case something breaks.

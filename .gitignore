@@ -4,3 +4,5 @@ March_2022*
 config
 kubernetes/custom/control.json
 kubernetes/monitoring/certs/*
+*.crt
+*.pem
