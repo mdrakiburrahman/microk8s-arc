@@ -28,7 +28,7 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
-microk8s install "--cpu=8" "--mem=16" "--disk=100" "--channel=1.22/stable" -y
+microk8s install "--cpu=10" "--mem=40" "--disk=100" "--channel=1.22/stable" -y
 
 # Seems to work better for smaller VMs
 
@@ -725,3 +725,126 @@ k delete pod sql-gp-1-0 -n arc --grace-period=0 --force
 ```
 
 Tail fluentbit in case something breaks.
+
+--- 
+# Active Directory setup
+
+First time create VM and Install Windows manually:
+```powershell
+New-VM -Name 'dc-1' -MemoryStartupBytes 4096MB -Path 'C:\HyperV\VMs'
+New-VHD -Path 'C:\HyperV\Disks\ws2016.dc_1.vhdx' -SizeBytes 60GB -Dynamic
+Add-VMHardDiskDrive -VMName 'dc-1' -Path 'C:\HyperV\Disks\ws2016.dc_1.vhdx'
+Set-VMDvdDrive -VMName 'dc-1' -ControllerNumber 1 -Path 'D:\iso\en_windows_server_2016_updated_feb_2018_x64_dvd_11636692.iso'
+Set-VMMemory -VMName 'dc-1' -DynamicMemoryEnabled $false -Priority 100
+Set-VMProcessor -VMName 'dc-1' -Count 2
+Get-VM 'dc-1' | Get-VMNetworkAdapter | Connect-VMNetworkAdapter -SwitchName "Default Switch"
+
+Get-VM 'dc-1'
+
+Start-VM –Name 'dc-1'
+
+# Go inside and install Windows using Key etc.
+# Take VHD backup once you RDP into Windows succesfully
+```
+
+Blow away VM:
+```powershell
+Stop-VM –Name 'dc-1'
+Remove-VM -Name 'dc-1' -Force
+Remove-Item 'C:\HyperV\Disks\ws2016.dc_1.vhdx'
+Remove-Item 'C:\HyperV\VMs\dc-1' -Recurse -Confirm:$false
+```
+
+Restart Hyper-V if needed with a stuck VM:
+```powershell
+Stop-Service vmms -Force
+Start-Service vmms
+```
+
+Create VM from backed up VHDx:
+```powershell
+# Turn on enhanced session
+Set-VMhost -EnableEnhancedSessionMode $True
+
+Copy-Item -Path 'C:\HyperV\VHD_baks\ws2016.dc_1_fresh_activated_prepped.vhdx' -Destination 'C:\HyperV\Disks\ws2016.dc_1.vhdx' -PassThru
+Start-Sleep -s 5
+New-VM -Name 'dc-1' -MemoryStartupBytes 4096MB -Path 'C:\HyperV\VMs'# -Generation 1
+Add-VMHardDiskDrive -VMName 'dc-1' -Path 'C:\HyperV\Disks\ws2016.dc_1.vhdx'
+Set-VMMemory -VMName 'dc-1' -DynamicMemoryEnabled $false -Priority 100
+Set-VMProcessor -VMName 'dc-1' -Count 2
+Get-VM 'dc-1' | Get-VMNetworkAdapter | Connect-VMNetworkAdapter -SwitchName "Default Switch"
+
+Get-VM 'dc-1'
+
+Start-VM –Name 'dc-1'
+
+# RDP into a fresh windows env!
+# Username: Administrator
+# Password: acntorPRESTO!
+
+# Get VM IP Address from Hyper-V
+get-vm  | Select -ExpandProperty Networkadapters  | Select VMName, IPAddresses
+
+# VMName    IPAddresses
+# ------    -----------
+# dc-1      {172.22.59.82, fe80::d41b:4054:bc40:ba3d}
+```
+
+Set Static IP address - the same one that we get with DHCP. This is for Domain Controller purposes.
+```powershell
+$IP = (Get-NetIPAddress | Where-Object {$_.AddressState -eq "Preferred" -and $_.ValidLifetime -lt "24:00:00"}).IPAddress
+$MaskBits = 22 # This means subnet mask = 255.255.252.0
+$Gateway = (Get-NetIPConfiguration | Foreach IPv4DefaultGateway | Select NextHop)."NextHop"
+$DNS = "127.0.0.1"
+$IPType = "IPv4"
+# Retrieve the network adapter that you want to configure
+$adapter = Get-NetAdapter | ? {$_.Status -eq "up"}
+# Remove any existing IP, gateway from our ipv4 adapter
+If (($adapter | Get-NetIPConfiguration).IPv4Address.IPAddress) {
+ $adapter | Remove-NetIPAddress -AddressFamily $IPType -Confirm:$false
+}
+If (($adapter | Get-NetIPConfiguration).Ipv4DefaultGateway) {
+ $adapter | Remove-NetRoute -AddressFamily $IPType -Confirm:$false
+}
+ # Configure the IP address and default gateway
+$adapter | New-NetIPAddress `
+ -AddressFamily $IPType `
+ -IPAddress $IP `
+ -PrefixLength $MaskBits `
+ -DefaultGateway $Gateway
+# Configure the DNS client server IP addresses
+$adapter | Set-DnsClientServerAddress -ServerAddresses $DNS
+```
+
+Upgrade to a Domain Controller:
+```powershell
+# Configure the Domain Controller
+$domainName = 'fg.contoso.com'
+$domainAdminPassword = "acntorPRESTO!"
+$secureDomainAdminPassword = $domainAdminPassword | ConvertTo-SecureString -AsPlainText -Force
+
+Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
+
+# Create Active Directory Forest
+Install-ADDSForest `
+    -DomainName "$domainName" `
+    -CreateDnsDelegation:$false `
+    -DatabasePath "C:\Windows\NTDS" `
+    -DomainMode "7" `
+    -DomainNetbiosName $domainName.Split('.')[0].ToUpper() `
+    -ForestMode "7" `
+    -InstallDns:$true `
+    -LogPath "C:\Windows\NTDS" `
+    -NoRebootOnCompletion:$false `
+    -SysvolPath "C:\Windows\SYSVOL" `
+    -Force:$true `
+    -SafeModeAdministratorPassword $secureDomainAdminPassword
+```
+> Turn off `Enhanced Session` after reboot!
+
+```PowerShell
+# Turn off enhanced session
+Set-VMhost -EnableEnhancedSessionMode $False
+```
+
+After the reboot, we can RDP as our Domain Admin `FG\Administrator`.
