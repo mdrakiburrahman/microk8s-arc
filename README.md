@@ -12,6 +12,7 @@ Run these in local **PowerShell in _Admin mode_** to spin up via Multipass:
 * `Multipassd` is the main binary available here: `C:\Program Files\Multipass\bin`
 * Default VM files end up here: `C:\Windows\System32\config\systemprofile\AppData\Roaming\multipassd`
 * Generated kubeconfig available here: `C:\Users\mdrrahman\AppData\Local\MicroK8s\config`
+* Errors go to Event Logs: https://multipass.run/docs/accessing-logs
 
 ### Multipass BSOD due to Hyper-V Dynamic Memory
 * https://github.com/canonical/multipass/issues/604
@@ -59,7 +60,7 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # {
-#   "address": "172.28.113.239",
+#   "address": "172.26.27.108",
 #   "type": "InternalIP"
 # }
 # {
@@ -71,7 +72,7 @@ microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 microk8s enable dns storage metallb ingress dashboard # rbac # dashboard <> rbac - both causes issues, one is ok
 # Enter CIDR for MetalLB: 
 
-# 172.28.113.200-172.28.113.230
+# 172.26.27.120-172.26.27.135
 
 # This must be in the same range as the VM above!
 
@@ -727,60 +728,104 @@ k delete pod sql-gp-1-0 -n arc --grace-period=0 --force
 Tail fluentbit in case something breaks.
 
 --- 
-# Active Directory setup
+# Active Directory VM setup on Hyper-V
 
-First time create VM and Install Windows manually:
+### First time create VM with ISO and Install Windows manually
 ```powershell
 New-VM -Name 'dc-1' -MemoryStartupBytes 4096MB -Path 'C:\HyperV\VMs'
-New-VHD -Path 'C:\HyperV\Disks\ws2016.dc_1.vhdx' -SizeBytes 60GB -Dynamic
-Add-VMHardDiskDrive -VMName 'dc-1' -Path 'C:\HyperV\Disks\ws2016.dc_1.vhdx'
-Set-VMDvdDrive -VMName 'dc-1' -ControllerNumber 1 -Path 'D:\iso\en_windows_server_2016_updated_feb_2018_x64_dvd_11636692.iso'
+New-VHD -Path 'C:\HyperV\Disks\ws2022.dc_1.vhdx' -SizeBytes 60GB -Dynamic
+Add-VMHardDiskDrive -VMName 'dc-1' -Path 'C:\HyperV\Disks\ws2022.dc_1.vhdx'
+Set-VMDvdDrive -VMName 'dc-1' -ControllerNumber 1 -Path 'D:\iso\en-us_windows_server_2022_updated_april_2022_x64_dvd_d428acee.iso'
 Set-VMMemory -VMName 'dc-1' -DynamicMemoryEnabled $false -Priority 100
 Set-VMProcessor -VMName 'dc-1' -Count 2
 Get-VM 'dc-1' | Get-VMNetworkAdapter | Connect-VMNetworkAdapter -SwitchName "Default Switch"
+Set-VM -Name 'dc-1' -CheckpointType Disabled
 
 Get-VM 'dc-1'
 
 Start-VM –Name 'dc-1'
 
-# Go inside and install Windows using Key etc.
-# Take VHD backup once you RDP into Windows succesfully
+# ---> Go inside and install Windows using Key etc.
+
+# Rename machine
+$password = ConvertTo-SecureString 'acntorPRESTO!' -AsPlainText -Force
+$localhostAdminUser = New-Object System.Management.Automation.PSCredential ('Administrator', $password)
+Rename-Computer -NewName "dc-1" -LocalCredential $localhostAdminUser -Restart
+
+# ---> Shut down
+# ---> Take VHD backup once you RDP into Windows succesfully
+```
+`Snapshot: ws2022.dc_1_fresh_activated.vhdx`
+
+### Upgrade to a Domain Controller
+```powershell
+# Configure the Domain Controller
+$domainName = 'fg.contoso.com'
+$domainAdminPassword = "acntorPRESTO!"
+$secureDomainAdminPassword = $domainAdminPassword | ConvertTo-SecureString -AsPlainText -Force
+
+Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
+
+# Create Active Directory Forest
+Install-ADDSForest `
+    -DomainName "$domainName" `
+    -CreateDnsDelegation:$false `
+    -DatabasePath "C:\Windows\NTDS" `
+    -DomainMode "7" `
+    -DomainNetbiosName $domainName.Split('.')[0].ToUpper() `
+    -ForestMode "7" `
+    -InstallDns:$true `
+    -LogPath "C:\Windows\NTDS" `
+    -NoRebootOnCompletion:$false `
+    -SysvolPath "C:\Windows\SYSVOL" `
+    -Force:$true `
+    -SafeModeAdministratorPassword $secureDomainAdminPassword
+```
+> Turn off `Enhanced Session` after reboot when it gets stuck at `please wait for gpsvc`!
+> Will take a couple mins to get past `Applying computer settings` screen - Win 2022 will go through with it
+
+```PowerShell
+# Turn off enhanced session
+Set-VMhost -EnableEnhancedSessionMode $False
 ```
 
-Blow away VM:
+After the reboot, we can RDP as our Domain Admin `FG\Administrator`:
+![1](_images\1.png)
+
+> Internet etc works!
+
+### Do a bunch of peripheral stuff
 ```powershell
+Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+
+# Install chocolatey
+iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+
+# Install apps
+$chocolateyAppList = 'grep,ssms'
+
+$appsToInstall = $chocolateyAppList -split "," | foreach { "$($_.Trim())" }
+
+foreach ($app in $appsToInstall)
+{
+    Write-Host "Installing $app"
+    & choco install $app /y -Force| Write-Output
+}
+```
+`Snapshot: ws2022.dc_1_fresh_activated_domain_on.vhdx`
+
+### Utility functions
+
+```powershell
+# Blow away VM:
 Stop-VM –Name 'dc-1'
 Remove-VM -Name 'dc-1' -Force
-Remove-Item 'C:\HyperV\Disks\ws2016.dc_1.vhdx'
+Remove-Item 'C:\HyperV\Disks\ws2022.dc_1.vhdx'
 Remove-Item 'C:\HyperV\VMs\dc-1' -Recurse -Confirm:$false
-```
 
-Restart Hyper-V if needed with a stuck VM:
-```powershell
+# Restart Hyper-V if needed with a stuck VM
 Stop-Service vmms -Force
 Start-Service vmms
-```
-
-Create VM from backed up VHDx:
-```powershell
-# Turn on enhanced session
-Set-VMhost -EnableEnhancedSessionMode $True
-
-Copy-Item -Path 'C:\HyperV\VHD_baks\ws2016.dc_1_fresh_activated_prepped.vhdx' -Destination 'C:\HyperV\Disks\ws2016.dc_1.vhdx' -PassThru
-Start-Sleep -s 5
-New-VM -Name 'dc-1' -MemoryStartupBytes 4096MB -Path 'C:\HyperV\VMs'# -Generation 1
-Add-VMHardDiskDrive -VMName 'dc-1' -Path 'C:\HyperV\Disks\ws2016.dc_1.vhdx'
-Set-VMMemory -VMName 'dc-1' -DynamicMemoryEnabled $false -Priority 100
-Set-VMProcessor -VMName 'dc-1' -Count 2
-Get-VM 'dc-1' | Get-VMNetworkAdapter | Connect-VMNetworkAdapter -SwitchName "Default Switch"
-
-Get-VM 'dc-1'
-
-Start-VM –Name 'dc-1'
-
-# RDP into a fresh windows env!
-# Username: Administrator
-# Password: acntorPRESTO!
 
 # Get VM IP Address from Hyper-V
 get-vm  | Select -ExpandProperty Networkadapters  | Select VMName, IPAddresses
@@ -790,7 +835,30 @@ get-vm  | Select -ExpandProperty Networkadapters  | Select VMName, IPAddresses
 # dc-1      {172.22.59.82, fe80::d41b:4054:bc40:ba3d}
 ```
 
-Set Static IP address - the same one that we get with DHCP. This is for Domain Controller purposes.
+Create VM from backed up VHDx:
+```powershell
+# Turn on enhanced session
+Set-VMhost -EnableEnhancedSessionMode $True
+
+Copy-Item -Path 'C:\HyperV\VHD_baks\ws2022.dc_1_fresh_activated_domain_on.vhdx' -Destination 'C:\HyperV\Disks\ws2022.dc_1.vhdx' -PassThru
+Start-Sleep -s 5
+New-VM -Name 'dc-1' -MemoryStartupBytes 4096MB -Path 'C:\HyperV\VMs'# -Generation 1
+Add-VMHardDiskDrive -VMName 'dc-1' -Path 'C:\HyperV\Disks\ws2022.dc_1.vhdx'
+Set-VMMemory -VMName 'dc-1' -DynamicMemoryEnabled $false -Priority 100
+Set-VMProcessor -VMName 'dc-1' -Count 2
+Get-VM 'dc-1' | Get-VMNetworkAdapter | Connect-VMNetworkAdapter -SwitchName "Default Switch"
+Set-VM -Name 'dc-1' -CheckpointType Disabled
+
+Get-VM 'dc-1'
+
+Start-VM –Name 'dc-1'
+
+# Username: Administrator
+# Password: acntorPRESTO!
+```
+⭐ Set Static IP address - the same one that we get with DHCP. This is for Domain Controller purposes.
+
+> This seems to reset every reboot
 ```powershell
 $IP = (Get-NetIPAddress | Where-Object {$_.AddressState -eq "Preferred" -and $_.ValidLifetime -lt "24:00:00"}).IPAddress
 $MaskBits = 22 # This means subnet mask = 255.255.252.0
@@ -815,36 +883,20 @@ $adapter | New-NetIPAddress `
 # Configure the DNS client server IP addresses
 $adapter | Set-DnsClientServerAddress -ServerAddresses $DNS
 ```
+---
 
-Upgrade to a Domain Controller:
-```powershell
-# Configure the Domain Controller
-$domainName = 'fg.contoso.com'
-$domainAdminPassword = "acntorPRESTO!"
-$secureDomainAdminPassword = $domainAdminPassword | ConvertTo-SecureString -AsPlainText -Force
+# Deploy Arc twice: Primary, Secondary
 
-Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
+```bash
+export ns='arc-primary' # 'arc-secondary'
 
-# Create Active Directory Forest
-Install-ADDSForest `
-    -DomainName "$domainName" `
-    -CreateDnsDelegation:$false `
-    -DatabasePath "C:\Windows\NTDS" `
-    -DomainMode "7" `
-    -DomainNetbiosName $domainName.Split('.')[0].ToUpper() `
-    -ForestMode "7" `
-    -InstallDns:$true `
-    -LogPath "C:\Windows\NTDS" `
-    -NoRebootOnCompletion:$false `
-    -SysvolPath "C:\Windows\SYSVOL" `
-    -Force:$true `
-    -SafeModeAdministratorPassword $secureDomainAdminPassword
+az arcdata dc create --path './custom' \
+                     --k8s-namespace $ns \
+                     --name $arcDcName \
+                     --subscription $subscriptionId \
+                     --resource-group $resourceGroup \
+                     --location $azureLocation \
+                     --connectivity-mode indirect \
+                     --use-k8s
+                     
 ```
-> Turn off `Enhanced Session` after reboot!
-
-```PowerShell
-# Turn off enhanced session
-Set-VMhost -EnableEnhancedSessionMode $False
-```
-
-After the reboot, we can RDP as our Domain Admin `FG\Administrator`.
