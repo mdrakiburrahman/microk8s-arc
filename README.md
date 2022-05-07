@@ -12,7 +12,8 @@ Run these in local **PowerShell in _Admin mode_** to spin up via Multipass:
 * `Multipassd` is the main binary available here: `C:\Program Files\Multipass\bin`
 * Default VM files end up here: `C:\Windows\System32\config\systemprofile\AppData\Roaming\multipassd`
 * Generated kubeconfig available here: `C:\Users\mdrrahman\AppData\Local\MicroK8s\config`
-* Errors go to Event Logs: https://multipass.run/docs/accessing-logs
+* Errors go to Event Logs: https://multipass.run/docs/accessing-logs `Windows Logs > Application`
+* VHDx is installed here: `C:\Windows\System32\config\systemprofile\AppData\Roaming\multipassd\vault\instances`
 
 ### Multipass BSOD due to Hyper-V Dynamic Memory
 * https://github.com/canonical/multipass/issues/604
@@ -29,9 +30,9 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
-microk8s install "--cpu=10" "--mem=40" "--disk=100" "--channel=1.22/stable" -y
+microk8s install "--cpu=10" "--mem=50" "--disk=100" "--channel=1.22/stable" -y
 
-# Seems to work better for smaller VMs
+# Seems to work better for smaller VMs (when my PSU was bad :-) )
 
 # Launched: microk8s-vm
 # 2022-03-05T23:05:51Z INFO Waiting for automatic snapd restart...
@@ -40,11 +41,9 @@ microk8s install "--cpu=10" "--mem=40" "--disk=100" "--channel=1.22/stable" -y
 # Stop the VM
 microk8s stop
 
-# Turn off Dynamic Memory
+# Turn off Dynamic Memory - when PSU was bad
 Set-VMMemory -VMName 'microk8s-vm' -DynamicMemoryEnabled $false -Priority 100
-
-# Start the VM
-microk8s start
+# microk8s start
 
 # Allow priveleged containers
 multipass shell microk8s-vm
@@ -60,7 +59,7 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # {
-#   "address": "172.26.27.108",
+#   "address": "172.17.182.143",
 #   "type": "InternalIP"
 # }
 # {
@@ -72,10 +71,21 @@ microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 microk8s enable dns storage metallb ingress dashboard # rbac # dashboard <> rbac - both causes issues, one is ok
 # Enter CIDR for MetalLB: 
 
-# 172.26.27.120-172.26.27.135
+# 172.17.182.150-172.17.182.180
 
 # This must be in the same range as the VM above!
+```
 
+### Microk8s static IP
+> https://github.com/canonical/microk8s/issues/2120
+> https://github.com/canonical/microk8s/issues/2452
+
+```bash
+multipass shell microk8s-vm
+```
+
+### Spit out kubeconfig
+```bash
 # Access via kubectl in this container
 $DIR = "C:\Users\mdrrahman\Documents\GitHub\microk8s-arc\microk8s"
 microk8s config view > $DIR\config # Export kubeconfig
@@ -95,8 +105,13 @@ cp microk8s/config $HOME/.kube/config
 dos2unix $HOME/.kube/config
 cat $HOME/.kube/config
 
-# Check kubectl works
-kubectl get nodes
+# Check kubectl works verbosely
+kubectl get nodes --v=9
+
+# If the above errors, you probably have a conflicting Container IP - clean it
+docker container prune -f
+docker inspect -f '{{.Name}} - {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -aq)
+
 # NAME          STATUS   ROLES    AGE   VERSION
 # microk8s-vm   Ready    <none>   29m   v1.22.6-3+7ab10db7034594
 kubectl get pods --all-namespaces
@@ -835,7 +850,7 @@ get-vm  | Select -ExpandProperty Networkadapters  | Select VMName, IPAddresses
 # dc-1      {172.22.59.82, fe80::d41b:4054:bc40:ba3d}
 ```
 
-Create VM from backed up VHDx:
+⭐ Create VM from backed up VHDx:
 ```powershell
 # Turn on enhanced session
 Set-VMhost -EnableEnhancedSessionMode $True
@@ -885,11 +900,12 @@ $adapter | Set-DnsClientServerAddress -ServerAddresses $DNS
 ```
 ---
 
-# Deploy Arc twice: Primary, Secondary
+## Deploy Arc twice: Primary, Secondary
 
 ```bash
-export ns='arc-primary' # 'arc-secondary'
+export ns='secondary' #primary
 
+# Create with the Microk8s profile
 az arcdata dc create --path './custom' \
                      --k8s-namespace $ns \
                      --name $arcDcName \
@@ -898,5 +914,10 @@ az arcdata dc create --path './custom' \
                      --location $azureLocation \
                      --connectivity-mode indirect \
                      --use-k8s
-                     
+
+# Monitor Data Controller
+watch -n 20 kubectl get datacontroller -n $ns
+
+# Monitor pods
+watch -n 10 kubectl get pods -n $ns
 ```
