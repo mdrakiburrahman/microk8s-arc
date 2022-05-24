@@ -30,7 +30,7 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
-microk8s install "--cpu=10" "--mem=50" "--disk=100" "--channel=1.22/stable" -y
+microk8s install "--cpu=8" "--mem=32" "--disk=100" "--channel=1.22/stable" -y
 
 # Seems to work better for smaller VMs (when my PSU was bad :-) )
 
@@ -43,7 +43,7 @@ microk8s stop
 
 # Turn off Dynamic Memory - when PSU was bad
 Set-VMMemory -VMName 'microk8s-vm' -DynamicMemoryEnabled $false -Priority 100
-# microk8s start
+microk8s start
 
 # Allow priveleged containers
 multipass shell microk8s-vm
@@ -71,7 +71,7 @@ microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 microk8s enable dns storage metallb ingress dashboard # rbac # dashboard <> rbac - both causes issues, one is ok
 # Enter CIDR for MetalLB: 
 
-# 172.17.182.150-172.17.182.180
+# 172.29.114.110-172.29.114.130
 
 # This must be in the same range as the VM above!
 ```
@@ -920,4 +920,33 @@ watch -n 20 kubectl get datacontroller -n $ns
 
 # Monitor pods
 watch -n 10 kubectl get pods -n $ns
+```
+---
+# K8s API server
+
+## References
+* ⭐ API Docs: https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24
+
+## Playaround
+
+### Bash
+```bash
+# https://kubernetes.io/docs/tasks/extend-kubernetes/http-proxy-access-api/
+# This creates a proxy to Kubernetes API Server
+kubectl proxy --port=8080
+
+# This works in this container, and also in Edge on my laptop thanks to port-forward
+curl http://localhost:8080
+# {
+#   "paths": [
+#     ...
+#     "/apis/apps",
+#     "/apis/apps/v1",
+#     "/apis/authentication.k8s.io",
+#     "/apis/authentication.k8s.io/v1",
+#     "/apis/authorization.k8s.io",
+#     ...
+
+# Get all pods in kube-system
+curl http://localhost:8080/api/v1/namespaces/kube-system/pods
 ```
