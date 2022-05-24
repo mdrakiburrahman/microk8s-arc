@@ -949,4 +949,22 @@ curl http://localhost:8080
 
 # Get all pods in kube-system
 curl http://localhost:8080/api/v1/namespaces/kube-system/pods
+
+# Logs from CoreDNS
+curl http://localhost:8080/api/v1/namespaces/kube-system/pods/coredns-7f9c69c78c-tcdbv/log
+# .:53
+# [INFO] plugin/reload: Running configuration MD5 = be0f52d3c13480652e0c73672f2fa263
+# CoreDNS-1.8.0
+# linux/amd64, go1.15.3, 054c9ae
+# W0524 14:55:24.338270       1 reflector.go:424] pkg/mod/k8s.io/client-go@v0.19.2/tools/cache/reflector.go:156: watch of *v1.Endpoints ended with: very short watch: pkg/mod/k8s.io/client-go@v0.19.2/tools/cache/reflector.go:156: Unexpected watch close - watch lasted less than a second and no items received
+
+# Get a list of all APIs
+curl http://localhost:8080/apis
+
+# Call a CRD
+curl http://localhost:8080/apis/crd.projectcalico.org
+curl http://localhost:8080/apis/crd.projectcalico.org/v1
+
+# Call non-ns resource like Nodes and PVs
+curl http://localhost:8080/api/v1/nodes
 ```
