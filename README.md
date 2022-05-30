@@ -30,6 +30,11 @@ multipass purge
 
 # Single node K8s cluster
 # Latest releases: https://microk8s.io/docs/release-notes
+
+# Small
+microk8s install "--cpu=4" "--mem=6" "--disk=20" "--channel=1.22/stable" -y
+
+# Fat
 microk8s install "--cpu=8" "--mem=32" "--disk=100" "--channel=1.22/stable" -y
 
 # Seems to work better for smaller VMs (when my PSU was bad :-) )
@@ -59,7 +64,7 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # {
-#   "address": "172.17.182.143",
+#   "address": "172.27.83.92",
 #   "type": "InternalIP"
 # }
 # {
@@ -68,10 +73,10 @@ microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # }
 
 # Enable features needed for arc
-microk8s enable dns storage metallb ingress dashboard # rbac # dashboard <> rbac - both causes issues, one is ok
+microk8s enable dns storage metallb ingress # rbac # dashboard <> rbac/dashboard - both causes issues, one is ok
 # Enter CIDR for MetalLB: 
 
-# 172.29.114.110-172.29.114.130
+# 172.27.83.100-172.27.83.120
 
 # This must be in the same range as the VM above!
 ```
@@ -80,9 +85,6 @@ microk8s enable dns storage metallb ingress dashboard # rbac # dashboard <> rbac
 > https://github.com/canonical/microk8s/issues/2120
 > https://github.com/canonical/microk8s/issues/2452
 
-```bash
-multipass shell microk8s-vm
-```
 
 ### Spit out kubeconfig
 ```bash
@@ -105,8 +107,8 @@ cp microk8s/config $HOME/.kube/config
 dos2unix $HOME/.kube/config
 cat $HOME/.kube/config
 
-# Check kubectl works verbosely
-kubectl get nodes --v=9
+# Check kubectl works
+kubectl get nodes # --v=9
 
 # If the above errors, you probably have a conflicting Container IP - clean it
 docker container prune -f
@@ -967,4 +969,432 @@ curl http://localhost:8080/apis/crd.projectcalico.org/v1
 
 # Call non-ns resource like Nodes and PVs
 curl http://localhost:8080/api/v1/nodes
+```
+
+---
+# `RBAC`, `impersonate` etc
+- [X]  Three account setup experiment
+  - [X]  `cluster-admin`
+  - [X]  SA1 with `impersonate` and nothing else
+  - [X]  SA2 with `pod` `*`
+  - [X]  SA3 with `get, list, watch` but not `delete`
+- [X] As SA1:
+  - [X] `delete` `pods` as SA1?
+  - [X] `delete` `pods` as SA2?
+  - [X] `delete` `pods` as SA3?
+  - [X] `delete` `namespace` as `clusteradmin` and cause havoc?
+- [ ] Understanding `resourceName` and what pattern is possible (e.g. RegEx)?
+  - [ ] If not, can I block my simple SA1 above using `resourceNames` to just impersonate SA3
+- [X]  Make API calls from my sandbox
+  - [X] Normal vs `impersonate`
+
+## Three account Setup
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: impersonate-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa1
+  namespace: impersonate-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa2
+  namespace: impersonate-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa3
+  namespace: impersonate-test
+---
+# ======================
+# ======= sa1 ==========
+# ======================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: impersonation-clusterrole
+rules:
+- apiGroups: [""]
+  resources:
+  - users
+  - groups
+  - serviceaccounts
+  verbs:
+  - "impersonate"
+- apiGroups: ["authentication.k8s.io"]
+  resources:
+  - userextras/oid
+  - userextras/obo
+  verbs:
+  - "impersonate"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sa1-clusterrolebinding
+subjects:
+- kind: ServiceAccount
+  name: sa1
+  namespace: impersonate-test
+roleRef:
+  kind: ClusterRole
+  name: impersonation-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+---
+# ======================
+# ======= sa2 ==========
+# ======================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-admin
+  namespace: impersonate-test
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sa2-rolebinding
+  namespace: impersonate-test
+subjects:
+- kind: ServiceAccount
+  name: sa2
+  namespace: impersonate-test
+roleRef:
+  kind: Role
+  name: pod-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# ======================
+# ======= sa3 ==========
+# ======================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-lister
+  namespace: impersonate-test
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sa3-rolebinding
+  namespace: impersonate-test
+subjects:
+- kind: ServiceAccount
+  name: sa3
+  namespace: impersonate-test
+roleRef:
+  kind: Role
+  name: pod-lister
+  apiGroup: rbac.authorization.k8s.io
+EOF
+# namespace/impersonate-test created
+# serviceaccount/sa1 created
+# serviceaccount/sa2 created
+# serviceaccount/sa3 created
+# clusterrole.rbac.authorization.k8s.io/impersonation-clusterrole created
+# clusterrolebinding.rbac.authorization.k8s.io/sa1-clusterrolebinding created
+# role.rbac.authorization.k8s.io/pod-admin created
+# rolebinding.rbac.authorization.k8s.io/sa2-rolebinding created
+# role.rbac.authorization.k8s.io/pod-lister created
+# rolebinding.rbac.authorization.k8s.io/sa3-rolebinding created
+
+# Quick Tests
+
+kubectl auth can-i delete pod -n impersonate-test --as=system:serviceaccount:impersonate-test:sa2
+# yes
+kubectl auth can-i delete pod -n impersonate-test --as=system:serviceaccount:impersonate-test:sa3
+# no
+kubectl auth can-i get pod -n impersonate-test --as=system:serviceaccount:impersonate-test:sa3
+# yes
+kubectl auth can-i get pod -n impersonate-test --as=system:serviceaccount:impersonate-test:sa1
+# no
+```
+
+##  API calls - mormal vs `impersonate`
+### Unauthenticated
+
+```bash
+# https://nieldw.medium.com/curling-the-kubernetes-api-server-d7675cfc398c
+
+# Extract, decode and write the ca.crt to a temporary location
+SECRET=default-token-5flgc
+kubectl get secret ${SECRET} -o json | jq -Mr '.data["ca.crt"]' | base64 -d > microk8s/ca.crt
+
+APISERVER=https://$(kubectl -n default get endpoints kubernetes --no-headers | awk '{ print $2 }')
+
+# Unauthenticated request
+curl --cacert /workspaces/microk8s-arc/microk8s/ca.crt -s $APISERVER/api/v1
+# {
+#   "kind": "Status",
+#   "apiVersion": "v1",
+#   "metadata": {
+    
+#   },
+#   "status": "Failure",
+#   "message": "forbidden: User \"system:anonymous\" cannot get path \"/api/v1\"",
+#   "reason": "Forbidden",
+#   "details": {
+    
+#   },
+#   "code": 403
+# }
+
+```
+
+### Normal - token from kubeconfig
+
+```bash
+TOKEN=$(yq '.users[0].user.token' microk8s/config)
+curl --cacert /workspaces/microk8s-arc/microk8s/ca.crt -s $APISERVER/api/v1 --header "Authorization: Bearer $TOKEN"
+# {
+#   "kind": "APIResourceList",
+#   "groupVersion": "v1",
+#   "resources": [
+#     {
+#       "name": "bindings",
+#       "singularName": "",
+#       "namespaced": true,
+#       "kind": "Binding",
+#       "verbs": [
+#         "create"
+#       ]
+#     },
+# . . .
+
+```
+
+### `Impersonate`
+
+```bash
+# Run a simple pod
+kubectl run nginx --image=nginx -n impersonate-test
+
+# To get the curl command, run
+kubectl get pods -n impersonate-test --as=system:serviceaccount:impersonate-test:sa3 --v=9
+# curl -v -XGET  -H "Impersonate-User: system:serviceaccount:impersonate-test:sa3" -H "Accept: application/json;as=Table;v=v1;g=meta.k8s.io,application/json;as=Table;v=v1beta1;g=meta.k8s.io,application/json" -H "User-Agent: kubectl/v1.23.6 (linux/amd64) kubernetes/ad33385" -H "Authorization: Bearer <masked>" 'https://172.27.83.92:16443/api/v1/namespaces/impersonate-test/pods?limit=500'
+
+# Curl - SA1
+TOKEN=$(yq '.users[0].user.token' microk8s/config)
+NAMESPACE='impersonate-test'
+RESOURCES='pods'
+ENDPOINT=api/v1/namespaces/$NAMESPACE/$RESOURCES
+curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
+            -s $APISERVER/$ENDPOINT \
+           --header "Authorization: Bearer $TOKEN" \
+           --header "Impersonate-User: system:serviceaccount:impersonate-test:sa1"
+# {
+#   "kind": "Status",
+#   "apiVersion": "v1",
+#   "metadata": {
+    
+#   },
+#   "status": "Failure",
+#   "message": "pods is forbidden: User \"system:serviceaccount:impersonate-test:sa1\" cannot list resource \"pods\" in API group \"\" in the namespace \"impersonate-test\"",
+#   "reason": "Forbidden",
+#   "details": {
+#     "kind": "pods"
+#   },
+#   "code": 403
+# }
+
+# Curl - SA2
+curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
+            -s $APISERVER/$ENDPOINT \
+           --header "Authorization: Bearer $TOKEN" \
+           --header "Impersonate-User: system:serviceaccount:impersonate-test:sa2"
+# {
+#   "kind": "PodList",
+#   "apiVersion": "v1",
+#   "metadata": {
+#     "selfLink": "/api/v1/namespaces/impersonate-test/pods",
+#     "resourceVersion": "54229"
+#   },
+#   "items": [
+#     {
+#       "metadata": {
+#         "name": "nginx",
+#         "namespace": "impersonate-test",
+#         "selfLink": "/api/v1/namespaces/impersonate-test/pods/nginx",
+#         "uid": "4a7dd37e-836f-4193-98f4-8ae8b543b5ea",
+#         "resourceVersion": "52983",
+#         "creationTimestamp": "2022-05-30T21:34:17Z",
+#         "labels": {
+#           "run": "nginx"
+#         },
+#         ...
+#         ...
+#             "ready": true,
+#             "restartCount": 0,
+#             "image": "docker.io/library/nginx:latest",
+#             "imageID": "docker.io/library/nginx@sha256...",
+#             "containerID": "containerd://5787bc6c28f39be5119...",
+#             "started": true
+#           }
+#         ],
+#         "qosClass": "BestEffort"
+#       }
+#     }
+#   ]
+# }
+```
+
+## Test impersonation
+
+### Take on `sa1`'s context
+
+```bash
+# Cache variables for Kubeconfig
+namespace=impersonate-test
+serviceAccount=sa1
+cluster_name=microk8s-cluster
+server=$(yq -o=json $HOME/.kube/config | jq -r '.clusters[0].cluster.server')
+secretName=$(kubectl --namespace $namespace get serviceAccount $serviceAccount -o jsonpath='{.secrets[0].name}')
+ca=$(kubectl --namespace $namespace get secret/$secretName -o jsonpath='{.data.ca\.crt}')
+token=$(kubectl --namespace $namespace get secret/$secretName -o jsonpath='{.data.token}' | base64 --decode)
+
+# Remove previous cluster-admin kubeconfig
+rm $HOME/.kube/config
+
+# Create scoped kubeconfig
+echo "
+apiVersion: v1
+kind: Config
+clusters:
+  - name: ${cluster_name}
+    cluster:
+      certificate-authority-data: ${ca}
+      server: ${server}
+contexts:
+  - name: ${serviceAccount}@${cluster_name}
+    context:
+      cluster: ${cluster_name}
+      namespace: ${namespace}
+      user: ${serviceAccount}
+users:
+  - name: ${serviceAccount}
+    user:
+      token: ${token}
+current-context: ${serviceAccount}@${cluster_name}
+" >> $HOME/.kube/config
+
+# Fails as expected
+kubectl get pods
+# Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:impersonate-test:sa1" cannot list resource "pods" in API group "" in the namespace "impersonate-test"
+```
+
+### `delete` `pods` as SA1
+
+```bash
+# Native
+kubectl delete pod nginx -n impersonate-test
+# Error from server (Forbidden): pods "nginx" is forbidden: User "system:serviceaccount:impersonate-test:sa1" cannot delete resource "pods" in API group "" in the namespace "impersonate-test"
+
+# -> As expected
+```
+
+### `delete` `pods` as SA2
+```bash
+# Native
+kubectl delete pod nginx -n impersonate-test --as=system:serviceaccount:impersonate-test:sa2
+# pod "nginx" deleted
+
+# -> Goes through, since SA2 has "*"
+```
+
+### `delete` `pods` as SA3
+```bash
+# Native
+kubectl delete pod nginx -n impersonate-test --as=system:serviceaccount:impersonate-test:sa3
+# Error from server (Forbidden): pods "nginx" is forbidden: User "system:serviceaccount:impersonate-test:sa3" cannot delete resource "pods" in API group "" in the namespace "impersonate-test"
+
+kubectl get pod nginx -n impersonate-test --as=system:serviceaccount:impersonate-test:sa3
+# NAME    READY   STATUS    RESTARTS   AGE
+# nginx   1/1     Running   0          35s
+
+# -> Only read goes through, delete does not as per SA3 setup
+```
+
+### `delete` `namespace` as `clusteradmin` (ClusterRoleBinding to system:masters) and cause havoc
+```bash
+# Native
+kubectl get ns impersonate-test --as=some-user --as-group=system:masters
+# NAME               STATUS   AGE
+# impersonate-test   Active   136m
+
+# curl version
+ENDPOINT=api/v1/namespaces/impersonate-test
+curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
+           -s $APISERVER/$ENDPOINT \
+           -H "Authorization: Bearer $TOKEN" \
+           -H "Impersonate-Group: system:masters" \
+           -H "Impersonate-User: some-user"
+
+# {
+#   "kind": "Namespace",
+#   "apiVersion": "v1",
+#   "metadata": {
+#     "name": "impersonate-test",
+#     "selfLink": "/api/v1/namespaces/impersonate-test",
+
+# -> Note if we don't have the Impersonate-User - we see an error - so it is mandatory
+# Internal Server Error: "/api/v1/namespaces/impersonate-test": requested [{Group  system:masters    }] without impersonating a user     
+ 
+# DELETE NS
+curl -XDELETE --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
+              -s $APISERVER/$ENDPOINT \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Impersonate-Group: system:masters" \
+              -H "Impersonate-User: some-user"
+# ...
+# },
+#   "status": {
+#     "phase": "Terminating"
+#   }
+# }
+
+# And quickly GET
+curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
+           -s $APISERVER/$ENDPOINT \
+           -H "Authorization: Bearer $TOKEN" \
+           -H "Impersonate-Group: system:masters" \
+           -H "Impersonate-User: some-user"
+# {
+#   "kind": "Status",
+#   "apiVersion": "v1",
+#   "metadata": {
+    
+#   },
+#   "status": "Failure",
+#   "message": "namespaces \"impersonate-test\" not found",
+#   "reason": "NotFound",
+#   "details": {
+#     "name": "impersonate-test",
+#     "kind": "namespaces"
+#   },
+#   "code": 404
+# }
+
+# GG!!
 ```

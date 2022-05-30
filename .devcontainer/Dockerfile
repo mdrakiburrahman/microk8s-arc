@@ -80,6 +80,13 @@ RUN apt-get install -y apt-transport-https ca-certificates curl gnupg-agent soft
 RUN curl -sSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose \
     && chmod +x /usr/local/bin/docker-compose
 
+# Install yq
+# Latest on https://launchpad.net/~rmescandon/+archive/ubuntu/yq is v4.25.1
+ARG VERSION=v4.25.1
+ARG BINARY=yq_linux_386
+RUN wget https://github.com/mikefarah/yq/releases/download/${VERSION}/${BINARY} -O /usr/bin/yq \ 
+    && chmod +x /usr/bin/yq
+
 # Clean up
 RUN apt-get autoremove -y \
     && apt-get clean -y \
