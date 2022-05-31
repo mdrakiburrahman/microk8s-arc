@@ -43,10 +43,8 @@ microk8s install "--cpu=8" "--mem=32" "--disk=100" "--channel=1.22/stable" -y
 # 2022-03-05T23:05:51Z INFO Waiting for automatic snapd restart...
 # ...
 
-# Stop the VM
-microk8s stop
-
 # Turn off Dynamic Memory - when PSU was bad
+microk8s stop
 Set-VMMemory -VMName 'microk8s-vm' -DynamicMemoryEnabled $false -Priority 100
 microk8s start
 
@@ -64,7 +62,7 @@ microk8s status --wait-ready
 # Get IP address of node for MetalLB range
 microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # {
-#   "address": "172.27.83.92",
+#   "address": "192.168.124.194",
 #   "type": "InternalIP"
 # }
 # {
@@ -73,10 +71,10 @@ microk8s kubectl get nodes -o wide -o json | jq -r '.items[].status.addresses[]'
 # }
 
 # Enable features needed for arc
-microk8s enable dns storage metallb ingress # rbac # dashboard <> rbac/dashboard - both causes issues, one is ok
+microk8s enable dns storage metallb ingress rbac # dashboard <> rbac/dashboard - both causes issues, one is ok
 # Enter CIDR for MetalLB: 
 
-# 172.27.83.100-172.27.83.120
+# 192.168.124.200-192.168.124.220
 
 # This must be in the same range as the VM above!
 ```
@@ -101,6 +99,7 @@ Turn on Docker Desktop.
 Now we go into our VSCode Container:
 
 ```bash
+# Take on cluster-admin
 rm -rf $HOME/.kube
 mkdir $HOME/.kube
 cp microk8s/config $HOME/.kube/config
@@ -978,15 +977,16 @@ curl http://localhost:8080/api/v1/nodes
   - [X]  SA1 with `impersonate` and nothing else
   - [X]  SA2 with `pod` `*`
   - [X]  SA3 with `get, list, watch` but not `delete`
+- [X]  Make API calls from my sandbox
+  - [X] Normal vs `impersonate`
 - [X] As SA1:
   - [X] `delete` `pods` as SA1?
   - [X] `delete` `pods` as SA2?
   - [X] `delete` `pods` as SA3?
   - [X] `delete` `namespace` as `clusteradmin` and cause havoc?
-- [ ] Understanding `resourceName` and what pattern is possible (e.g. RegEx)?
-  - [ ] If not, can I block my simple SA1 above using `resourceNames` to just impersonate SA3
-- [X]  Make API calls from my sandbox
-  - [X] Normal vs `impersonate`
+- [X] Understanding `resourceName` and what pattern is possible (e.g. RegEx)?
+  - [X] If not, can I block my simple SA1 above using `resourceNames` to just impersonate SA3?
+  - [ ] Test with `guid` users and `system:authenticated` group, that has a CRB/RB (like Arc) to see if it works
 
 ## Three account Setup
 
@@ -1139,7 +1139,7 @@ kubectl auth can-i get pod -n impersonate-test --as=system:serviceaccount:impers
 # https://nieldw.medium.com/curling-the-kubernetes-api-server-d7675cfc398c
 
 # Extract, decode and write the ca.crt to a temporary location
-SECRET=default-token-5flgc
+SECRET=$(kubectl get serviceaccounts default -o json | jq -r .secrets[0].name)
 kubectl get secret ${SECRET} -o json | jq -Mr '.data["ca.crt"]' | base64 -d > microk8s/ca.crt
 
 APISERVER=https://$(kubectl -n default get endpoints kubernetes --no-headers | awk '{ print $2 }')
@@ -1219,7 +1219,7 @@ curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
 #   "code": 403
 # }
 
-# Curl - SA2
+# Curl - Impersonate SA2
 curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
             -s $APISERVER/$ENDPOINT \
            --header "Authorization: Bearer $TOKEN" \
@@ -1262,7 +1262,7 @@ curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
 
 ## Test impersonation
 
-### Take on `sa1`'s context
+### Take on SA1s context
 
 ```bash
 # Cache variables for Kubeconfig
@@ -1344,6 +1344,7 @@ kubectl get ns impersonate-test --as=some-user --as-group=system:masters
 # impersonate-test   Active   136m
 
 # curl version
+TOKEN=$(yq '.users[0].user.token' $HOME/.kube/config) # SA1 Token
 ENDPOINT=api/v1/namespaces/impersonate-test
 curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
            -s $APISERVER/$ENDPOINT \
@@ -1398,3 +1399,382 @@ curl -XGET --cacert /workspaces/microk8s-arc/microk8s/ca.crt \
 
 # GG!!
 ```
+
+## Test `resourceName`
+
+### Reset impersonation CRB/CRs
+
+```bash
+# Take on cluster-admin
+# Delete
+kubectl delete clusterrolebinding.rbac.authorization.k8s.io/sa1-clusterrolebinding
+kubectl delete clusterrole.rbac.authorization.k8s.io/impersonation-clusterrole
+```
+
+### RegEx in `resourceName`?
+
+Nope:
+* https://github.com/kubernetes/kubernetes/issues/56582
+* https://github.com/kubernetes/kubernetes/issues/44703
+
+### Block SA1 using `resourceNames` to just impersonate sa3 (aka `pod-lister`)
+
+Pre-test to level set:
+```bash
+# Take on SA1s context
+
+# Try impersonating SA3
+kubectl get pod nginx -n impersonate-test --as=system:serviceaccount:impersonate-test:sa3
+# Error from server (Forbidden): serviceaccounts "sa3" is forbidden: User "system:serviceaccount:impersonate-test:sa1" cannot impersonate resource "serviceaccounts" in API group "" in the namespace "impersonate-test"
+```
+
+Some thoughts:
+* Should this be CRB or just RB? An SA can operate across Namespaces, so perhaps CRB.
+* Also, shouldn't the SA have Namespace name in it? Else how does it know who to impersonate?
+* Curious how this works out with GUID based User too, since User is not Namespace scoped.
+
+```bash
+# Take on cluster-admin
+cat <<EOF | kubectl apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sa3-impersonation-clusterrole
+rules:
+- apiGroups: [""]
+  resources:
+  - serviceaccounts
+  verbs:
+  - "impersonate"
+  resourceNames: ["sa3"] # <- Confirmed this does NOT need to be system:serviceaccount:impersonate-test:sa3
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sa1-clusterrolebinding
+subjects:
+- kind: ServiceAccount
+  name: sa1
+  namespace: impersonate-test
+roleRef:
+  kind: ClusterRole
+  name: sa3-impersonation-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+# Take on SA1s context
+
+# Try impersonating SA3
+kubectl get pod nginx -n impersonate-test --as=system:serviceaccount:impersonate-test:sa3
+# NAME    READY   STATUS    RESTARTS   AGE
+# nginx   1/1     Running   0          4h41m
+
+# Try impersonating SA2
+kubectl get pod nginx -n impersonate-test --as=system:serviceaccount:impersonate-test:sa2
+# Error from server (Forbidden): serviceaccounts "sa2" is forbidden: User "system:serviceaccount:impersonate-test:sa1" cannot impersonate resource "serviceaccounts" in API group "" in the namespace "impersonate-test"
+
+# Try impersonating cluster-admin
+kubectl get ns impersonate-test --as=admin --as-group=system:masters
+# Error from server (Forbidden): users "admin" is forbidden: User "system:serviceaccount:impersonate-test:sa1" cannot impersonate resource "users" in API group "" at the cluster scope
+```
+
+Great! `resourceNames` works at effectively scoping down as long as we know the name of the ServiceAccount we would like to `impersonate`.
+
+Cleanup:
+```bash
+# Take on cluster-admin
+kubectl delete clusterrolebinding.rbac.authorization.k8s.io/sa1-clusterrolebinding
+kubectl delete clusterrole.rbac.authorization.k8s.io/sa3-impersonation-clusterrole
+```
+
+### Note from Arc
+
+Reference from Arc that has `impersonate`:
+* Basically, my deployer kubeconfig gets something
+* The `azure-arc-operatorsa` gets it
+* Then `azure-arc-kube-aad-proxy-sa` gets it <-- KAP
+
+#### ClusterRoles
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+ name: azure-arc-kube-aad-proxy-operator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - users
+  - groups
+  - serviceaccounts
+  verbs:
+  - impersonate
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - userextras/oid
+  - userextras/obo
+  verbs:
+  - impersonate
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: onboarding-role-for-agents
+rules:
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - delete
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - list
+  - get
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - list
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
+  - clusterconfig.azure.com
+  resources:
+  - '*'
+  verbs:
+  - '*'
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - patch
+  - create
+  - update
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - arc.azure.com
+  resources:
+  - connectedclusters
+  - connectedclusters/status
+  verbs:
+  - list
+  - create
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - update
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - users
+  - groups
+  - serviceaccounts
+  verbs:
+  - impersonate
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - userextras/oid
+  - userextras/obo
+  verbs:
+  - impersonate
+---
+```
+
+#### Roles
+So we have 2 AAD `Users`:
+* K8 Bridge (`c2104d9b-8c91-4f28-8a0a-5909d768818c`): https://ms.portal.azure.com/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Overview/objectId/c2104d9b-8c91-4f28-8a0a-5909d768818c/appId/319f651f-7ddb-4fc6-9857-7aef9250bd05
+* Custom Locations RP (`51dfe1e8-70c6-4de5-a08e-e18aff23d815`): https://ms.portal.azure.com/#view/Microsoft_AAD_IAM/ManagedAppMenuBlade/~/Overview/objectId/51dfe1e8-70c6-4de5-a08e-e18aff23d815/appId/bc313c14-388c-4e7d-a58e-70017303ee3b
+
+So:
+```yaml
+# Name is targetted at K8s Bridge even though it's a Role
+apiVersion: rbac.authorization.k8s.io/v1
+  kind: Role
+  metadata:
+    name: cl-rpappobjectid-c2104d9b-8c91-4f28-8a0a-5909d768818c-e0cdb5ca286fc0af209009083c75767f10ec49a104abf4244687d01fb6f17991
+    namespace: azure-arc-data
+  rules:
+  - apiGroups:
+    - '*'
+    resources:
+    - '*'
+    verbs:
+    - '*'
+```
+
+#### ClusterRoleBindings
+> Connected to the 2 `ClusterRoles` - 1-to-1
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: azure-arc-kube-aad-proxy-operator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: azure-arc-kube-aad-proxy-operator
+subjects:
+- kind: ServiceAccount
+  name: azure-arc-kube-aad-proxy-sa
+  namespace: azure-arc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: onboarding-rolebinding-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: onboarding-role-for-agents
+subjects:
+- kind: ServiceAccount
+  name: azure-arc-operatorsa
+  namespace: azure-arc
+```
+
+#### RoleBindings
+> Connected to the `Role` - 1-to-1
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cl-rpappobjectid-c2104d9b-8c91-4f28-8a0a-5909d768818c-e0cdb5ca286fc0af209009083c75767f10ec49a104abf4244687d01fb6f17991
+  namespace: azure-arc-data
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cl-rpappobjectid-c2104d9b-8c91-4f28-8a0a-5909d768818c-e0cdb5ca286fc0af209009083c75767f10ec49a104abf4244687d01fb6f17991
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: c2104d9b-8c91-4f28-8a0a-5909d768818c # <-- K8 Bridge
+  namespace: azure-arc-data
+```
+
+### Test with user `guid` that has a `(ClusterRole)Binding` to see if it works
+
+MVP test:
+* `Role` with `Read` on Pods
+* `RoleBinding` with funky guid user
+* `Role` and `RoleBinding` (for SA) with `impersonate` funky guid user, _without_ `system:authenticated`
+* If that doesn't work, try funky guid user, _with_ `system:authenticated`
+
+```bash
+# Clean up
+kubectl delete clusterrole.rbac.authorization.k8s.io/impersonation-clusterrole
+kubectl delete clusterrolebinding.rbac.authorization.k8s.io/sa1-clusterrolebinding
+kubectl delete role.rbac.authorization.k8s.io/pod-admin -n impersonate-test
+kubectl delete rolebinding.rbac.authorization.k8s.io/sa2-rolebinding -n impersonate-test
+kubectl delete role.rbac.authorization.k8s.io/pod-lister -n impersonate-test
+kubectl delete rolebinding.rbac.authorization.k8s.io/sa3-rolebinding -n impersonate-test
+
+# Create
+cat <<EOF | kubectl apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-lister
+  namespace: impersonate-test
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-lister-guid-rolebinding
+  namespace: impersonate-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-lister
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: c2104d9b-8c91-4f28-8a0a-5909d768818c
+  namespace: impersonate-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: guid-impersonation-no-group-clusterrole
+rules:
+- apiGroups: [""]
+  resources:
+  - "users"
+  verbs:
+  - "impersonate"
+  resourceNames: ["c2104d9b-8c91-4f28-8a0a-5909d768818c"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: guid-impersonation-no-group-clusterrolebinding
+roleRef:
+  kind: ClusterRole
+  name: guid-impersonation-no-group-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: sa1
+  namespace: impersonate-test
+EOF
+# role.rbac.authorization.k8s.io/pod-lister created
+# rolebinding.rbac.authorization.k8s.io/pod-lister-guid-rolebinding created
+# role.rbac.authorization.k8s.io/guid-impersonation-no-group-role created
+# rolebinding.rbac.authorization.k8s.io/guid-impersonation-no-group-rolebinding created
+
+# Take on SA1s context
+kubectl get pods -n impersonate-test --as=c2104d9b-8c91-4f28-8a0a-5909d768818c
+# NAME    READY   STATUS    RESTARTS   AGE
+# nginx   1/1     Running   0          8h
+```
+
+Lessons learned:
+* `impersonate` doesn't work if you tried it through `Role` above
+* Looks like impersonation as a user doesn't need `system:authenticated` - but in Arc script it might be needed because it is appended for some reason.
