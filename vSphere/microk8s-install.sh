@@ -1,6 +1,4 @@
 #!/bin/bash
-exec >install_microk8s.log
-exec 2>&1
 export adminUsername='boor'
 echo "###########################################################################"
 echo "Installing snap, Docker and Microk8s..." 
