@@ -30,3 +30,5 @@ kubeconfigPath="/home/${adminUsername}/.kube"
 mkdir -p $kubeconfigPath
 sudo chown -R $adminUsername $kubeconfigPath
 sudo microk8s config view > "$kubeconfigPath/config"
+sudo usermod -a -G microk8s $adminUsername
+sudo chown -f -R $adminUsername $kubeconfigPath
