@@ -3,10 +3,12 @@ exec >install_microk8s.log
 exec 2>&1
 export adminUsername='boor'
 echo "###########################################################################"
-echo "Installing snap and Microk8s..." 
+echo "Installing snap, Docker and Microk8s..." 
 echo "###########################################################################"
 sudo apt-get update
 sudo apt install snapd
+# Docker is needed for VSContainer
+sudo snap install docker
 sudo snap install microk8s --classic --channel=1.24/stable
 sudo snap alias microk8s.kubectl kubectl
 sudo microk8s status --wait-ready
